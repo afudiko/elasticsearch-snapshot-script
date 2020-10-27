@@ -2,7 +2,7 @@ import boto3
 import requests
 import time
 import json
-import thread
+import _thread as thread
 from requests_aws4auth import AWS4Auth
 
 default_repo_name = "tvlk-repo"
@@ -12,9 +12,10 @@ default_repo_name = "tvlk-repo"
 # get ec2 iam keys
 ###
 def ec2_auth():
-  role = requests.get("http://169.254.169.254/latest/meta-data/iam/security-credentials/").text
-  role = requests.get("http://169.254.169.254/latest/meta-data/iam/security-credentials/"+role)
-  return AWS4Auth(role.json()["AccessKeyId"], role.json()["SecretAccessKey"], "ap-southeast-1", 'es', session_token=role.json()["Token"])
+  # role = requests.get("http://169.254.169.254/latest/meta-data/iam/security-credentials/").text
+  # role = requests.get("http://169.254.169.254/latest/meta-data/iam/security-credentials/"+role)
+  credentials = boto3.Session().get_credentials()
+  return AWS4Auth(credentials.access_key, credentials.secret_key, "ap-southeast-1", 'es', session_token=credentials.token)
 
 
 ###
@@ -44,12 +45,14 @@ def create_snapshot(host,repo_name,snapshot_name,wait_for_completion=False):
   return r
 
 def restore(host,repo_name,snapshot_name,wait_for_completion=False):
+  d = '{"indices": "*","ignore_unavailable": true,"include_global_state": true,"rename_pattern": ".kibana","rename_replacement": "restoreda_.kibana"}'
+  d = json.dumps(d)
   url = host + "_snapshot/" + repo_name + "/" + snapshot_name + "/_restore"
   if wait_for_completion:
     url = url + "?wait_for_completion=true"
 
   payload = '{}'  
-  r = requests.post(url, auth=ec2_auth(), headers={"Content-Type": "application/json"})
+  r = requests.post(url, auth=ec2_auth(), data=d, headers={"Content-Type": "application/json"})
   return r
 
 def get_repo(host):
@@ -73,8 +76,9 @@ def get_aliases(host):
   return r
 
 def get_indices(host):
-  url = host + "_cat/indices"
-  r = requests.get(url, auth=ec2_auth(), headers={"Content-Type": "application/json"})
+  url = host + "_reindex"
+  payload = '{"source": {"index": "restoreda_.kibana"},"dest": {"index": ".kibana"}}'
+  r = requests.get(url, auth=ec2_auth(), data=payload, headers={"Content-Type": "application/json"})
   return r
 
 def delete_index(host,index):
@@ -123,7 +127,7 @@ def delete(host,json):
 
 def get_snapshot_status_from_list_snapshots(json,snapshot_name):
   for i in range(5):
-    print "try "+ str(i) + " " + snapshot_name
+    print("try "+ str(i) + " " + snapshot_name)
     for x in json["snapshots"]:
       if x["snapshot"]==snapshot_name:
         return x
@@ -131,10 +135,10 @@ def get_snapshot_status_from_list_snapshots(json,snapshot_name):
 
 def snapshot_checker_worker(identifier,host,snapshot_name):
   while get_snapshot_status_from_list_snapshots(get_repo_detail(host,default_repo_name).json(),snapshot_name)["state"] == "IN_PROGRESS":
-    print "Snapshoting on "+identifier+" "+get_snapshot_status_from_list_snapshots(get_repo_detail(host,default_repo_name).json(),snapshot_name)["state"]
+    print("Snapshoting on "+identifier+" "+get_snapshot_status_from_list_snapshots(get_repo_detail(host,default_repo_name).json(),snapshot_name)["state"])
     time.sleep(5)
     pass
-  print "Snapshoting on "+host+" finished with status "+get_snapshot_status_from_list_snapshots(get_repo_detail(host,default_repo_name).json(),snapshot_name)["state"]
+  print("Snapshoting on "+host+" finished with status "+get_snapshot_status_from_list_snapshots(get_repo_detail(host,default_repo_name).json(),snapshot_name)["state"])
   pass
 
 def initiate_snapshot_async(tuples,s3,role):
@@ -145,29 +149,29 @@ def initiate_snapshot_async(tuples,s3,role):
     time_string = time.strftime("%Y-%m-%d-%H-%M-%S", localtime)
     snapshot_name = identifier+"-"+time_string
     try:
-      print "Create snapshot response : " + create_snapshot(host,default_repo_name,snapshot_name).text
+      print("Create snapshot response : " + create_snapshot(host,default_repo_name,snapshot_name).text)
       time.sleep(5)
       thread.start_new_thread( snapshot_checker_worker, (identifier, host, snapshot_name) )
     except:
-      print "Error: unable to start snapshot or thread on "+ identifier
+      print("Error: unable to start snapshot or thread on "+ identifier)
       pass
     pass
   return
 
 def initiate_snapshot(tuples,s3,role):
   for identifier, host in tuples.items():
-    print "Create repo response : " + create_repo(host,s3,role,default_repo_name).text
+    print("Create repo response : " + create_repo(host,s3,role,default_repo_name).text)
     time.sleep(2)
     localtime = time.localtime()
     time_string = time.strftime("%Y-%m-%d-%H-%M-%S", localtime)
     snapshot_name = identifier+"-"+time_string
-    print "Create snapshot with name " + snapshot_name
+    print("Create snapshot with name " + snapshot_name)
     try:
-      print "Create snapshot response : " + create_snapshot(host,default_repo_name,snapshot_name).text
+      print("Create snapshot response : " + create_snapshot(host,default_repo_name,snapshot_name).text)
       time.sleep(2)
       snapshot_checker_worker(identifier, host, snapshot_name)
     except:
-      print "Error: unable to start snapshot or thread on "+ identifier
+      print("Error: unable to start snapshot or thread on "+ identifier)
       pass
     pass
   return
@@ -187,15 +191,15 @@ def get_latest_snapshot(json,identifier):
 
 def initiate_restore(tuples,s3,role):
   for identifier, host in tuples.items():
-    print "Create repo response : " + create_repo(host,s3,role,default_repo_name).text
+    print("Create repo response : " + create_repo(host,s3,role,default_repo_name).text)
     time.sleep(2)
-    print "Get repo response : " + get_repo_detail(host,default_repo_name).text
+    print("Get repo response : " + get_repo_detail(host,default_repo_name).text)
     json = get_repo_detail(host,default_repo_name).json()
     snapshot_name = get_latest_snapshot(json,identifier)["snapshot"]
     if snapshot_name == None:
       continue
-    print "Restoring "+snapshot_name+" for " + identifier
-    print "Restoring response " + restore(host,default_repo_name,snapshot_name).text
-    print get_indices(host).text
+    print("Restoring "+snapshot_name+" for " + identifier)
+    print("Restoring response " + restore(host,default_repo_name,snapshot_name).text)
+    print(get_indices(host).text)
     pass
   return
